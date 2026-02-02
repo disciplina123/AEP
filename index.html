@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Super Mario Study App</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" rel="stylesheet">
+    <style>
+      body {
+        margin: 0;
+        font-family: 'Press Start 2P', cursive;
+        overflow-x: hidden;
+      }
+      
+      /* Custom scrollbar */
+      ::-webkit-scrollbar {
+        width: 16px;
+        background: #000;
+      }
+      ::-webkit-scrollbar-thumb {
+        background: #F8D878;
+        border: 4px solid #000;
+        box-shadow: inset -2px -2px 0px #C0A040;
+      }
+
+      /* NES/SNES Style CSS Borders */
+      .nes-box {
+        position: relative;
+        background: #FFFFCE; /* Yoshi Message Box Color */
+        border-style: solid;
+        border-width: 4px;
+        border-color: #000;
+        box-shadow: 8px 8px 0px rgba(0,0,0,0.5);
+      }
+
+      .smw-card {
+        position: relative;
+        border: 4px solid #000;
+        box-shadow: inset 4px 4px 0px rgba(255,255,255,0.4), inset -4px -4px 0px rgba(0,0,0,0.4);
+      }
+      
+      .pixel-text-shadow {
+        text-shadow: 4px 4px 0px #000;
+      }
+
+      @keyframes fadeIn {
+        from { opacity: 0; }
+        to { opacity: 1; }
+      }
+      @keyframes bounce-once {
+        0%, 100% { transform: translateY(0); }
+        50% { transform: translateY(-20px); }
+      }
+      .animate-fadeIn {
+        animation: fadeIn 0.3s ease-out;
+      }
+      .animate-bounce-once {
+        animation: bounce-once 0.6s ease-out;
+      }
+    </style>
+  <script type="importmap">
+{
+  "imports": {
+    "react": "https://esm.sh/react@^19.2.4",
+    "react-dom/": "https://esm.sh/react-dom@^19.2.4/",
+    "react/": "https://esm.sh/react@^19.2.4/",
+    "vite": "https://esm.sh/vite@^7.3.1",
+    "@vitejs/plugin-react": "https://esm.sh/@vitejs/plugin-react@^5.1.2",
+    "react-player": "https://esm.sh/react-player@^3.4.0",
+    "@google/genai": "https://esm.sh/@google/genai@^1.39.0"
+  }
+}
+</script>
+<link rel="stylesheet" href="/index.css">
+</head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/index.tsx"></script>
+  </body>
+</html>

@@ -1,0 +1,5 @@
+{
+  "name": "Super Mario Study App",
+  "description": "A gamified study application featuring a Pomodoro timer, task management, and study statistics, all themed after Super Mario World.",
+  "requestFramePermissions": []
+}
