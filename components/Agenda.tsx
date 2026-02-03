@@ -4,9 +4,16 @@ import { GoogleGenAI, Type } from "@google/genai";
 
 // --- TYPES ---
 interface AgendaItem {
-  id: number;
+  id: string; // Changed to string for better UUIDs
   task: string;
   completed: boolean;
+}
+
+interface TaskFolder {
+    id: string;
+    title: string;
+    type: 'fixed' | 'normal'; // 'fixed' = Daily Routine (don't delete on complete), 'normal' = To-Do
+    tasks: AgendaItem[];
 }
 
 interface BookItem {
@@ -20,13 +27,13 @@ interface BookItem {
 interface MangaItem {
   id: string;
   title: string;
-  chapter: string; // String to allow '10.5' or 'Vol 1'
+  chapter: string; 
 }
 
 interface EventItem {
   id: string;
   title: string;
-  date: string; // YYYY-MM-DD
+  date: string; 
 }
 
 interface ExamScores {
@@ -38,8 +45,7 @@ interface ExamScores {
 
 interface ExamEntry {
     id: string;
-    text?: string; // Para provas genéricas
-    // Campos específicos para ENEM/Provas estruturadas
+    text?: string; 
     year?: number; 
     scores?: ExamScores;
 }
@@ -48,10 +54,9 @@ interface ExamFolder {
     id: string;
     title: string;
     entries: ExamEntry[];
-    isOpen: boolean; // Mantido para compatibilidade
+    isOpen: boolean; 
 }
 
-// Added 'events' to view modes
 type ViewMode = 'menu' | 'tasks' | 'library' | 'exams' | 'manga' | 'events';
 
 interface AgendaProps {
@@ -62,12 +67,34 @@ export default function Agenda({ themeMode }: AgendaProps) {
   // --- STATE: VIEW MODE ---
   const [viewMode, setViewMode] = useState<ViewMode>('menu');
 
-  // --- STATE: AGENDA ---
-  const [items, setItems] = useState<AgendaItem[]>(() => {
-    const saved = localStorage.getItem('agendaItems');
-    return saved ? JSON.parse(saved) : [];
+  // --- STATE: TASKS (Refactored to Folders) ---
+  const [taskFolders, setTaskFolders] = useState<TaskFolder[]>(() => {
+    const savedFolders = localStorage.getItem('taskFolders');
+    if (savedFolders) {
+        return JSON.parse(savedFolders);
+    }
+    
+    // Migration: Check for old single-list items
+    const oldItems = localStorage.getItem('agendaItems');
+    const migratedTasks = oldItems ? JSON.parse(oldItems) : [];
+    const sanitizedTasks = migratedTasks.map((t: any) => ({...t, id: String(t.id)}));
+
+    return [
+        { id: 'daily-routine', title: 'DAILY ROUTINE', type: 'fixed', tasks: [] },
+        { id: 'general-todo', title: 'GENERAL TASKS', type: 'normal', tasks: sanitizedTasks }
+    ];
   });
-  const [newTask, setNewTask] = useState('');
+  
+  const [activeTaskFolderId, setActiveTaskFolderId] = useState<string | null>(null);
+  const [newTaskFolderInput, setNewTaskFolderInput] = useState('');
+  const [newTaskInput, setNewTaskInput] = useState('');
+
+  // --- STATE: ROUTINE HISTORY (STREAK) ---
+  const [routineHistory, setRoutineHistory] = useState<string[]>(() => {
+      const saved = localStorage.getItem('routineHistory');
+      return saved ? JSON.parse(saved) : [];
+  });
+  const [showHistoryModal, setShowHistoryModal] = useState(false);
 
   // --- STATE: LIBRARY ---
   const [bookQuery, setBookQuery] = useState('');
@@ -98,7 +125,6 @@ export default function Agenda({ themeMode }: AgendaProps) {
   const [examFolders, setExamFolders] = useState<ExamFolder[]>(() => {
       const saved = localStorage.getItem('examFolders');
       if (saved) return JSON.parse(saved);
-      // Default folder only
       return [
           { id: 'enem-def', title: 'ENEM', entries: [], isOpen: false }
       ];
@@ -123,8 +149,12 @@ export default function Agenda({ themeMode }: AgendaProps) {
 
   // --- EFFECTS ---
   useEffect(() => {
-    localStorage.setItem('agendaItems', JSON.stringify(items));
-  }, [items]);
+    localStorage.setItem('taskFolders', JSON.stringify(taskFolders));
+  }, [taskFolders]);
+
+  useEffect(() => {
+    localStorage.setItem('routineHistory', JSON.stringify(routineHistory));
+  }, [routineHistory]);
 
   useEffect(() => {
     localStorage.setItem('savedBooks', JSON.stringify(savedBooks));
@@ -142,15 +172,16 @@ export default function Agenda({ themeMode }: AgendaProps) {
     localStorage.setItem('examFolders', JSON.stringify(examFolders));
   }, [examFolders]);
 
-  // --- HELPER: Identify active folder and if it is ENEM type ---
+  // --- HELPER: Identify active folder ---
   const activeFolder = activeFolderId ? examFolders.find(f => f.id === activeFolderId) : null;
   const isEnemFolder = activeFolder ? (activeFolder.id === 'enem-def' || activeFolder.title.toUpperCase().includes('ENEM')) : false;
+  
+  const activeTaskFolder = activeTaskFolderId ? taskFolders.find(f => f.id === activeTaskFolderId) : null;
 
   // --- HELPER: Date Calculations ---
   const getDaysLeft = (dateStr: string) => {
       const target = new Date(dateStr);
       const today = new Date();
-      // Reset hours to compare dates only
       target.setHours(0,0,0,0);
       today.setHours(0,0,0,0);
       
@@ -159,37 +190,179 @@ export default function Agenda({ themeMode }: AgendaProps) {
       return diffDays;
   };
 
+  // --- HELPER: Streak Calculation ---
+  const calculateStreak = () => {
+      if (routineHistory.length === 0) return 0;
+      
+      const sortedDates = [...routineHistory].sort((a, b) => new Date(b).getTime() - new Date(a).getTime());
+      const today = new Date().toLocaleDateString('en-CA');
+      const yesterdayDate = new Date();
+      yesterdayDate.setDate(yesterdayDate.getDate() - 1);
+      const yesterday = yesterdayDate.toLocaleDateString('en-CA');
+
+      let streak = 0;
+      let currentCheck = new Date();
+      
+      // Se hoje foi feito, começa de hoje. Se não, começa de ontem.
+      if (sortedDates.includes(today)) {
+          // Streak includes today
+      } else if (sortedDates.includes(yesterday)) {
+          // Streak includes yesterday, today pending
+          currentCheck.setDate(currentCheck.getDate() - 1);
+      } else {
+          // Streak broken
+          return 0;
+      }
+
+      // Conta para trás
+      while (true) {
+          const dateStr = currentCheck.toLocaleDateString('en-CA');
+          if (sortedDates.includes(dateStr)) {
+              streak++;
+              currentCheck.setDate(currentCheck.getDate() - 1);
+          } else {
+              break;
+          }
+      }
+      return streak;
+  };
+
+  const streakCount = calculateStreak();
+
   // --- HANDLERS: VIEW NAVIGATION ---
   const switchView = (mode: ViewMode) => {
       play8BitSound(mode === 'menu' ? 'pipe' : 'open');
       setViewMode(mode);
       if (mode === 'menu') {
           setActiveFolderId(null);
+          setActiveTaskFolderId(null);
+          setShowHistoryModal(false);
       }
   };
 
-  // --- HANDLERS: AGENDA ---
-  const handleAddItem = () => {
-    if (!newTask.trim()) return;
+  // --- HANDLERS: TASKS (FOLDERS) ---
+  const addTaskFolder = () => {
+      if (!newTaskFolderInput.trim()) return;
+      const newFolder: TaskFolder = {
+          id: Date.now().toString(),
+          title: newTaskFolderInput,
+          type: 'normal',
+          tasks: []
+      };
+      setTaskFolders(prev => [...prev, newFolder]);
+      setNewTaskFolderInput('');
+      play8BitSound('powerup');
+  };
+
+  const deleteTaskFolder = (id: string) => {
+      setTaskFolders(prev => prev.filter(f => f.id !== id));
+      play8BitSound('break');
+  };
+
+  const openTaskFolder = (id: string) => {
+      setActiveTaskFolderId(id);
+      play8BitSound('open');
+  };
+
+  const closeTaskFolder = () => {
+      setActiveTaskFolderId(null);
+      play8BitSound('pipe');
+  };
+
+  // --- HANDLERS: TASKS (ITEMS) ---
+  const addTaskItem = () => {
+    if (!newTaskInput.trim() || !activeTaskFolderId) return;
     const newItem: AgendaItem = {
-      id: Date.now() + Math.random(),
-      task: newTask,
+      id: Date.now().toString(),
+      task: newTaskInput,
       completed: false
     };
-    setItems(prev => [...prev, newItem]);
-    setNewTask('');
+    
+    // Se adicionar tarefa nova na rotina, pode quebrar a conclusão de hoje
+    setTaskFolders(prev => prev.map(f => {
+        if (f.id === activeTaskFolderId) {
+            const newTasks = [...f.tasks, newItem];
+            // Se for rotina e tinha completado hoje, remove do histórico pois agora tem mais uma
+            if (f.type === 'fixed') {
+                const today = new Date().toLocaleDateString('en-CA');
+                if (routineHistory.includes(today)) {
+                    setRoutineHistory(h => h.filter(d => d !== today));
+                }
+            }
+            return { ...f, tasks: newTasks };
+        }
+        return f;
+    }));
+
+    setNewTaskInput('');
     play8BitSound('coin');
   };
 
-  const toggleItem = (id: number) => {
-    setItems(prev => prev.map(item => item.id === id ? { ...item, completed: !item.completed } : item));
-    play8BitSound('click');
+  const toggleTaskItem = (taskId: string) => {
+    let playedSound = false;
+
+    setTaskFolders(prev => prev.map(f => {
+        if (f.id === activeTaskFolderId) {
+            const updatedTasks = f.tasks.map(t => t.id === taskId ? { ...t, completed: !t.completed } : t);
+            
+            // Lógica Especial para Rotina Diária
+            if (f.type === 'fixed') {
+                const allCompleted = updatedTasks.length > 0 && updatedTasks.every(t => t.completed);
+                const today = new Date().toLocaleDateString('en-CA');
+                
+                if (allCompleted) {
+                    if (!routineHistory.includes(today)) {
+                        setRoutineHistory(h => [...h, today]);
+                        play8BitSound('1up'); // Som especial de vitória do dia
+                        playedSound = true;
+                    }
+                } else {
+                    if (routineHistory.includes(today)) {
+                        setRoutineHistory(h => h.filter(d => d !== today));
+                    }
+                }
+            }
+
+            return { ...f, tasks: updatedTasks };
+        }
+        return f;
+    }));
+
+    if (!playedSound) play8BitSound('click');
   };
 
-  const deleteItem = (e: React.MouseEvent, id: number) => {
+  const deleteTaskItem = (e: React.MouseEvent, taskId: string) => {
     e.stopPropagation();
-    setItems(prev => prev.filter(item => item.id !== id));
+    setTaskFolders(prev => prev.map(f => {
+        if (f.id === activeTaskFolderId) {
+            const updatedTasks = f.tasks.filter(t => t.id !== taskId);
+            
+            // Se deletar tarefa, pode ser que as restantes estejam todas completas
+            if (f.type === 'fixed' && updatedTasks.length > 0) {
+                const allCompleted = updatedTasks.every(t => t.completed);
+                const today = new Date().toLocaleDateString('en-CA');
+                if (allCompleted && !routineHistory.includes(today)) {
+                    setRoutineHistory(h => [...h, today]);
+                    play8BitSound('1up');
+                }
+            }
+            
+            return { ...f, tasks: updatedTasks };
+        }
+        return f;
+    }));
     play8BitSound('break');
+  };
+
+  const resetDailyTasks = () => {
+      if (!activeTaskFolderId) return;
+      setTaskFolders(prev => prev.map(f => 
+          f.id === activeTaskFolderId 
+          ? { ...f, tasks: f.tasks.map(t => ({ ...t, completed: false })) } 
+          : f
+      ));
+      // Reset day não apaga histórico, só desmarca tarefas para o dia seguinte
+      play8BitSound('powerup');
   };
 
   // --- HANDLERS: LIBRARY ---
@@ -310,6 +483,12 @@ export default function Agenda({ themeMode }: AgendaProps) {
           return m;
       }));
       play8BitSound('coin');
+  };
+  
+  const handleMangaChapterEdit = (id: string, newVal: string) => {
+      setMangaItems(prev => prev.map(m =>
+          m.id === id ? { ...m, chapter: newVal } : m
+      ));
   };
 
   // --- HANDLERS: EVENTS ---
@@ -442,17 +621,17 @@ export default function Agenda({ themeMode }: AgendaProps) {
       <div className="w-full max-w-3xl">
         
         {/* Container Principal */}
-        <div className="relative border-4 rounded-lg overflow-hidden"
+        <div className="relative border-4 rounded-lg overflow-hidden flex flex-col"
              style={{ 
                  backgroundColor: colors.ui.background, 
                  borderColor: isMinimalist ? '#FFF' : '#000',
                  boxShadow: isMinimalist ? '8px 8px 0 #FFF' : '8px 8px 0 rgba(0,0,0,0.5)',
-                 minHeight: '500px'
+                 height: '600px'
              }}>
           
           {/* === MAIN MENU VIEW === */}
           {viewMode === 'menu' && (
-             <div className="flex flex-col items-center justify-center h-[500px] gap-8 p-6">
+             <div className="flex flex-col items-center justify-center h-full gap-8 p-6">
                  
                  {/* Title Tools */}
                  <div className="text-center mb-4">
@@ -549,7 +728,7 @@ export default function Agenda({ themeMode }: AgendaProps) {
           {viewMode !== 'menu' && (
               <>
                 {/* Header with Back Button */}
-                <div className="border-b-4 p-4 flex items-center justify-between relative z-20 gap-4" 
+                <div className="border-b-4 p-4 flex items-center justify-between relative z-20 gap-4 flex-shrink-0" 
                     style={{ 
                         backgroundColor: headerColor, 
                         borderColor: isMinimalist ? '#FFF' : '#000' 
@@ -560,7 +739,7 @@ export default function Agenda({ themeMode }: AgendaProps) {
                         colorType="white" 
                         size="sm" 
                         themeMode={themeMode}
-                        className="px-4 w-auto"
+                        className="px-6 w-auto text-xs md:text-sm"
                         title="Back to Tools"
                     >
                         {"< BACK"}
@@ -585,45 +764,186 @@ export default function Agenda({ themeMode }: AgendaProps) {
                 {/* --- CONTENT AREA --- */}
                 
                 {viewMode === 'tasks' && (
-                    <div className="flex flex-col h-full bg-white dark:bg-black" style={{ minHeight: '430px' }}>
-                        <div className="p-4 border-b-4 relative z-10" style={{ backgroundColor: isMinimalist ? '#000' : '#e6f2ff', borderColor: isMinimalist ? '#FFF' : '#000' }}>
-                            <div className="flex flex-col md:flex-row gap-2">
-                            <input 
-                                type="text" 
-                                value={newTask}
-                                onChange={(e) => setNewTask(e.target.value)}
-                                onKeyDown={(e) => e.key === 'Enter' && handleAddItem()}
-                                placeholder="NEW TASK..."
-                                className="flex-1 p-2 border-2 rounded font-bold focus:outline-none focus:ring-2 uppercase"
-                                style={{ fontFamily: THEME.font, backgroundColor: isMinimalist ? '#000' : '#FFF', color: isMinimalist ? '#FFF' : '#000', borderColor: isMinimalist ? '#FFF' : '#000' }}
-                            />
-                            <RetroButton onClick={handleAddItem} colorType="green" size="md" title="Add" sound="powerup" themeMode={themeMode}>ADD</RetroButton>
-                            </div>
-                        </div>
-
-                        <div className="p-4 flex-1 overflow-y-auto custom-scrollbar" style={{ backgroundColor: boardColor }}>
-                            {items.length === 0 && (
-                                <div className="flex flex-col items-center justify-center h-40 opacity-50">
-                                    <p style={{ fontFamily: THEME.font, color: isMinimalist ? '#FFF' : '#000' }}>NO PLANS YET...</p>
-                                </div>
-                            )}
-                            <div className="space-y-3">
-                                {items.map((item) => (
-                                    <div key={item.id} onClick={() => toggleItem(item.id)} className={`relative flex items-center gap-3 p-3 border-2 rounded shadow-sm transition-all group cursor-pointer ${item.completed ? 'opacity-70' : 'opacity-100 hover:brightness-95'}`} style={{ backgroundColor: isMinimalist ? '#000' : (item.completed ? '#e6ffe6' : '#FFF'), borderColor: isMinimalist ? '#FFF' : '#000' }}>
-                                        <div className={`w-6 h-6 border-2 flex items-center justify-center transition-colors flex-shrink-0 ${item.completed ? (isMinimalist ? 'bg-white' : 'bg-green-500') : (isMinimalist ? 'bg-black' : 'bg-white')}`} style={{ borderColor: isMinimalist ? '#FFF' : '#000' }}>
-                                            {item.completed && <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={isMinimalist ? "#000" : "#FFF"} strokeWidth="4"><path d="M20 6L9 17l-5-5" /></svg>}
-                                        </div>
-                                        <span className={`flex-1 text-sm md:text-base font-bold uppercase break-words ${item.completed ? 'line-through' : ''}`} style={{ fontFamily: THEME.font, color: isMinimalist ? '#FFF' : '#000' }}>{item.task}</span>
-                                        <button type="button" onClick={(e) => deleteItem(e, item.id)} className="px-2 py-1 text-xs font-bold border-2 rounded hover:bg-red-500 hover:text-white transition-colors flex-shrink-0 relative z-10" style={{ borderColor: isMinimalist ? '#FFF' : '#000', color: isMinimalist ? '#FFF' : '#F00', fontFamily: THEME.font }}>DEL</button>
+                    <div className="flex flex-col flex-1 min-h-0 bg-white dark:bg-black" style={{ backgroundColor: boardColor }}>
+                        
+                        {/* --- VIEW: FOLDER LIST --- */}
+                        {!activeTaskFolderId && (
+                            <>
+                                <div className="p-4 border-b-4 relative z-10" style={{ backgroundColor: isMinimalist ? '#000' : '#e6f2ff', borderColor: isMinimalist ? '#FFF' : '#000' }}>
+                                    <div className="flex gap-2">
+                                        <input 
+                                            type="text" 
+                                            value={newTaskFolderInput}
+                                            onChange={(e) => setNewTaskFolderInput(e.target.value)}
+                                            onKeyDown={(e) => e.key === 'Enter' && addTaskFolder()}
+                                            placeholder="NEW FOLDER (e.g. WORK)..."
+                                            className="flex-1 p-2 border-2 rounded font-bold focus:outline-none focus:ring-2 uppercase"
+                                            style={{ fontFamily: THEME.font, backgroundColor: isMinimalist ? '#000' : '#FFF', color: isMinimalist ? '#FFF' : '#000', borderColor: isMinimalist ? '#FFF' : '#000' }}
+                                        />
+                                        <RetroButton onClick={addTaskFolder} colorType="green" size="md" title="Add Folder" sound="powerup" themeMode={themeMode}>ADD</RetroButton>
                                     </div>
-                                ))}
+                                </div>
+
+                                <div className="p-4 flex-1 overflow-y-auto custom-scrollbar">
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                        {taskFolders.map(folder => (
+                                            <div 
+                                                key={folder.id} 
+                                                onClick={() => openTaskFolder(folder.id)}
+                                                className={`
+                                                    relative cursor-pointer transition-all active:translate-y-1 hover:brightness-110 flex flex-col items-center justify-center p-6 min-h-[140px] border-4
+                                                `}
+                                                style={{ 
+                                                    backgroundColor: folder.type === 'fixed' ? (isMinimalist ? '#222' : colors.yellow.main) : (isMinimalist ? '#000' : '#FFF'), 
+                                                    borderColor: isMinimalist ? '#FFF' : '#000',
+                                                    boxShadow: isMinimalist ? '4px 4px 0 #FFF' : '4px 4px 0 rgba(0,0,0,0.5)', 
+                                                    color: isMinimalist ? '#FFF' : (folder.type === 'fixed' ? '#000' : '#000')
+                                                }}
+                                            >
+                                                <div className="mb-2">
+                                                    {folder.type === 'fixed' ? (
+                                                        // Star Icon for Fixed
+                                                        <svg width="40" height="40" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2L15.09 8.26L22 9.27L17 14.14L18.18 21.02L12 17.77L5.82 21.02L7 14.14L2 9.27L8.91 8.26L12 2Z" stroke={isMinimalist ? "#FFF" : "none"} strokeWidth={isMinimalist ? "2" : "0"} fill={isMinimalist ? "none" : "currentColor"}/></svg>
+                                                    ) : (
+                                                        // Folder Icon for Normal
+                                                        <svg width="40" height="40" viewBox="0 0 24 24" fill="currentColor"><path d="M10 4H4C2.9 4 2.01 4.9 2.01 6L2 18C2 19.1 2.9 20 4 20H20C21.1 20 22 19.1 22 18V8C22 6.9 21.1 6 20 6H12L10 4Z" /></svg>
+                                                    )}
+                                                </div>
+                                                <div className="flex items-center gap-2">
+                                                    <span className="font-bold text-lg uppercase text-center leading-tight" style={{ fontFamily: THEME.font, textShadow: isMinimalist ? 'none' : (folder.type === 'fixed' ? 'none' : 'none') }}>{folder.title}</span>
+                                                </div>
+                                                <div className="text-[10px] mt-2 opacity-80" style={{ fontFamily: 'monospace' }}>
+                                                    {folder.tasks.filter(t => !t.completed).length} OPEN / {folder.tasks.length} TOTAL
+                                                </div>
+                                                
+                                                {/* Only allow deleting normal folders */}
+                                                {folder.type !== 'fixed' && (
+                                                    <button onClick={(e) => { e.stopPropagation(); deleteTaskFolder(folder.id); }} className="absolute top-2 right-2 w-8 h-8 flex items-center justify-center text-xs font-bold border-2 rounded hover:bg-red-500 hover:text-white transition-colors bg-white text-black" style={{ borderColor: '#000' }} title="Delete Folder">X</button>
+                                                )}
+                                                {folder.type === 'fixed' && (
+                                                    <div className="absolute top-2 right-2 px-2 py-1 text-[8px] bg-black text-white border border-white rounded opacity-50">FIXED</div>
+                                                )}
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            </>
+                        )}
+
+                        {/* --- VIEW: TASK LIST (INSIDE FOLDER) --- */}
+                        {activeTaskFolderId && activeTaskFolder && (
+                            <div className="flex flex-col h-full animate-in slide-in-from-right duration-300">
+                                {/* Folder Header */}
+                                <div className="p-3 border-b-4 flex items-center gap-2 sticky top-0 z-10 flex-shrink-0" style={{ backgroundColor: isMinimalist ? '#111' : (activeTaskFolder.type === 'fixed' ? colors.yellow.light : '#f0f0f0'), borderColor: isMinimalist ? '#FFF' : '#000' }}>
+                                    <RetroButton onClick={closeTaskFolder} colorType="white" size="sm" className="w-auto px-6 text-xs md:text-sm" title="Back" themeMode={themeMode}>{"< BACK"}</RetroButton>
+                                    <h3 className="text-lg md:text-xl font-bold uppercase truncate flex-1" style={{ fontFamily: THEME.font, color: isMinimalist ? '#FFF' : '#000' }}>{activeTaskFolder.title}</h3>
+                                    
+                                    {/* ROTINA DIÁRIA EXTRAS */}
+                                    {activeTaskFolder.type === 'fixed' && (
+                                        <div className="flex items-center gap-2">
+                                            {/* Streak Counter */}
+                                            <div className="flex items-center gap-1 bg-black text-white px-2 py-1 rounded border-2 border-white" title="Current Streak">
+                                                <svg width="12" height="12" viewBox="0 0 24 24" fill="#FF4500" stroke="#FFF" strokeWidth="1">
+                                                    <path d="M12 2C12 2 8 6 8 10C8 13 10 15 12 15C14 15 16 13 16 10C16 6 12 2 12 2ZM12 22C7 22 4 17 4 12C4 7 8 2 8 2C8 2 6 7 6 10C6 14 9 17 12 17C15 17 18 14 18 10C18 7 16 2 16 2C16 2 20 7 20 12C20 17 17 22 12 22Z"/>
+                                                </svg>
+                                                <span className="text-[10px] font-bold" style={{ fontFamily: THEME.font }}>{streakCount}</span>
+                                            </div>
+
+                                            {/* History Button */}
+                                            <RetroButton onClick={() => setShowHistoryModal(true)} colorType="orange" size="sm" className="w-auto px-2" title="History" themeMode={themeMode}>
+                                                <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor">
+                                                    <path d="M19 4h-1V2h-2v2H8V2H6v2H5c-1.11 0-1.99.9-1.99 2L3 20a2 2 0 0 0 2 2h14c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 16H5V10h14v10zm0-12H5V6h14v2z" />
+                                                </svg>
+                                            </RetroButton>
+
+                                            {/* Reset Button */}
+                                            <RetroButton onClick={resetDailyTasks} colorType="blue" size="sm" className="w-auto px-2 text-[10px]" title="Uncheck all" themeMode={themeMode}>RESET</RetroButton>
+                                        </div>
+                                    )}
+                                </div>
+
+                                {/* Add Task Input */}
+                                <div className="p-4 border-b-4 relative z-10" style={{ backgroundColor: isMinimalist ? '#000' : '#fff', borderColor: isMinimalist ? '#FFF' : '#000' }}>
+                                    <div className="flex flex-col md:flex-row gap-2">
+                                        <input 
+                                            type="text" 
+                                            value={newTaskInput}
+                                            onChange={(e) => setNewTaskInput(e.target.value)}
+                                            onKeyDown={(e) => e.key === 'Enter' && addTaskItem()}
+                                            placeholder="NEW TASK..."
+                                            className="flex-1 p-2 border-2 rounded font-bold focus:outline-none focus:ring-2 uppercase"
+                                            style={{ fontFamily: THEME.font, backgroundColor: isMinimalist ? '#000' : '#FFF', color: isMinimalist ? '#FFF' : '#000', borderColor: isMinimalist ? '#FFF' : '#000' }}
+                                        />
+                                        <RetroButton onClick={addTaskItem} colorType="green" size="md" title="Add Task" sound="powerup" themeMode={themeMode}>ADD</RetroButton>
+                                    </div>
+                                </div>
+
+                                {/* Task List */}
+                                <div className="p-4 flex-1 overflow-y-auto custom-scrollbar">
+                                    {activeTaskFolder.tasks.length === 0 && (
+                                        <div className="flex flex-col items-center justify-center h-40 opacity-50">
+                                            <p style={{ fontFamily: THEME.font, color: isMinimalist ? '#FFF' : '#000' }}>NO TASKS HERE.</p>
+                                        </div>
+                                    )}
+                                    <div className="space-y-3">
+                                        {activeTaskFolder.tasks.map((item) => (
+                                            <div key={item.id} onClick={() => toggleTaskItem(item.id)} className={`relative flex items-center gap-3 p-3 border-2 rounded shadow-sm transition-all group cursor-pointer ${item.completed ? 'opacity-70' : 'opacity-100 hover:brightness-95'}`} style={{ backgroundColor: isMinimalist ? '#000' : (item.completed ? '#e6ffe6' : '#FFF'), borderColor: isMinimalist ? '#FFF' : '#000' }}>
+                                                <div className={`w-6 h-6 border-2 flex items-center justify-center transition-colors flex-shrink-0 ${item.completed ? (isMinimalist ? 'bg-white' : 'bg-green-500') : (isMinimalist ? 'bg-black' : 'bg-white')}`} style={{ borderColor: isMinimalist ? '#FFF' : '#000' }}>
+                                                    {item.completed && <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke={isMinimalist ? "#000" : "#FFF"} strokeWidth="4"><path d="M20 6L9 17l-5-5" /></svg>}
+                                                </div>
+                                                <span className={`flex-1 text-sm md:text-base font-bold uppercase break-words ${item.completed ? 'line-through' : ''}`} style={{ fontFamily: THEME.font, color: isMinimalist ? '#FFF' : '#000' }}>{item.task}</span>
+                                                <button type="button" onClick={(e) => deleteTaskItem(e, item.id)} className="px-2 py-1 text-xs font-bold border-2 rounded hover:bg-red-500 hover:text-white transition-colors flex-shrink-0 relative z-10" style={{ borderColor: isMinimalist ? '#FFF' : '#000', color: isMinimalist ? '#FFF' : '#F00', fontFamily: THEME.font }}>DEL</button>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
                             </div>
-                        </div>
+                        )}
+                        
+                        {/* --- HISTORY MODAL --- */}
+                        {showHistoryModal && (
+                            <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
+                                <div className="w-[90%] max-w-sm border-4 p-1" 
+                                     style={{ 
+                                         backgroundColor: isMinimalist ? '#000' : '#FFF',
+                                         borderColor: isMinimalist ? '#FFF' : '#000',
+                                         boxShadow: '8px 8px 0 rgba(0,0,0,0.5)'
+                                     }}>
+                                    <div className="border-2 p-4 flex flex-col gap-4 max-h-[400px]" style={{ borderColor: isMinimalist ? '#FFF' : '#000' }}>
+                                        <div className="flex justify-between items-center border-b-2 pb-2" style={{ borderColor: isMinimalist ? '#FFF' : '#eee' }}>
+                                            <h3 className="font-bold text-sm" style={{ fontFamily: THEME.font, color: isMinimalist ? '#FFF' : '#000' }}>STREAK HISTORY</h3>
+                                            <button onClick={() => setShowHistoryModal(false)} className="font-bold hover:text-red-500" style={{ color: isMinimalist ? '#FFF' : '#000' }}>X</button>
+                                        </div>
+                                        
+                                        <div className="flex-1 overflow-y-auto custom-scrollbar">
+                                            {routineHistory.length === 0 ? (
+                                                <p className="text-center text-xs py-8 opacity-50" style={{ fontFamily: THEME.font, color: isMinimalist ? '#FFF' : '#000' }}>NO DAYS COMPLETED YET.</p>
+                                            ) : (
+                                                <div className="grid grid-cols-1 gap-2">
+                                                    {[...routineHistory].reverse().map(date => (
+                                                        <div key={date} className="flex items-center gap-2 p-2 border rounded bg-green-50" style={{ backgroundColor: isMinimalist ? '#111' : '#e6ffe6', borderColor: isMinimalist ? '#333' : '#bbf7d0' }}>
+                                                            <div className="w-2 h-2 bg-green-500 rounded-full"></div>
+                                                            <span className="text-xs font-bold" style={{ fontFamily: THEME.font, color: isMinimalist ? '#FFF' : '#000' }}>{new Date(date + 'T12:00:00').toLocaleDateString()}</span>
+                                                            <span className="text-[8px] ml-auto opacity-60 font-bold text-green-700" style={{ color: isMinimalist ? '#4ade80' : '#15803d' }}>COMPLETED</span>
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            )}
+                                        </div>
+                                        
+                                        <div className="text-center text-[10px] opacity-70 border-t-2 pt-2" style={{ fontFamily: 'monospace', color: isMinimalist ? '#FFF' : '#000', borderColor: isMinimalist ? '#FFF' : '#eee' }}>
+                                            TOTAL DAYS: {routineHistory.length}
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+
                     </div>
                 )}
                 
                 {viewMode === 'library' && (
-                    <div className="flex flex-col min-h-[430px] overflow-hidden" style={{ backgroundColor: boardColor }}>
+                    <div className="flex flex-col flex-1 min-h-0 overflow-hidden" style={{ backgroundColor: boardColor }}>
                         <div className="p-4 border-b-4 flex-shrink-0 relative z-10" style={{ backgroundColor: isMinimalist ? '#000' : '#fdf6e3', borderColor: isMinimalist ? '#FFF' : '#000' }}>
                             <div className="flex gap-2">
                                 <input type="text" value={bookQuery} onChange={(e) => setBookQuery(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && handleSearchBooks()} placeholder="SEARCH BOOKS..." autoFocus className="flex-1 p-2 border-2 rounded font-bold uppercase focus:outline-none focus:ring-2" style={{ fontFamily: THEME.font, borderColor: isMinimalist ? '#FFF' : '#000', backgroundColor: isMinimalist ? '#000' : '#FFF', color: isMinimalist ? '#FFF' : '#000' }} />
@@ -670,7 +990,7 @@ export default function Agenda({ themeMode }: AgendaProps) {
                 )}
 
                 {viewMode === 'manga' && (
-                    <div className="flex flex-col h-full bg-white dark:bg-black" style={{ minHeight: '430px' }}>
+                    <div className="flex flex-col flex-1 min-h-0 bg-white dark:bg-black">
                         {/* INPUT AREA */}
                         <div className="p-4 border-b-4 relative z-10" style={{ backgroundColor: isMinimalist ? '#000' : '#e0f7fa', borderColor: isMinimalist ? '#FFF' : '#000' }}>
                             <div className="flex flex-col md:flex-row gap-2">
@@ -724,8 +1044,19 @@ export default function Agenda({ themeMode }: AgendaProps) {
                                                 style={{ borderColor: isMinimalist ? '#FFF' : '#000', color: isMinimalist ? '#FFF' : '#000' }}
                                             >-</button>
                                             
-                                            <div className="w-16 text-center font-bold bg-gray-100 dark:bg-gray-800 border rounded py-1" style={{ fontFamily: 'monospace', borderColor: isMinimalist ? '#555' : '#ccc' }}>
-                                                CH {item.chapter}
+                                            <div className="flex items-center justify-center w-20 border rounded px-1" 
+                                                 style={{ 
+                                                     borderColor: isMinimalist ? '#FFF' : '#000',
+                                                     backgroundColor: isMinimalist ? '#333' : '#F0F0F0' 
+                                                 }}>
+                                                <span className="text-[10px] mr-1 opacity-60" style={{ fontFamily: THEME.font, color: isMinimalist ? '#FFF' : '#000' }}>CH</span>
+                                                <input
+                                                    type="text"
+                                                    value={item.chapter}
+                                                    onChange={(e) => handleMangaChapterEdit(item.id, e.target.value)}
+                                                    className="w-full bg-transparent focus:outline-none font-bold text-center p-1"
+                                                    style={{ fontFamily: 'monospace', color: isMinimalist ? '#FFF' : '#000' }}
+                                                />
                                             </div>
 
                                             <button 
@@ -750,7 +1081,7 @@ export default function Agenda({ themeMode }: AgendaProps) {
                 )}
 
                 {viewMode === 'events' && (
-                    <div className="flex flex-col h-full bg-white dark:bg-black" style={{ minHeight: '430px' }}>
+                    <div className="flex flex-col flex-1 min-h-0 bg-white dark:bg-black">
                         {/* INPUT AREA */}
                         <div className="p-4 border-b-4 relative z-10" style={{ backgroundColor: isMinimalist ? '#000' : '#e0f7fa', borderColor: isMinimalist ? '#FFF' : '#000' }}>
                             <div className="flex flex-col md:flex-row gap-2">
@@ -844,7 +1175,7 @@ export default function Agenda({ themeMode }: AgendaProps) {
                 )}
 
                 {viewMode === 'exams' && (
-                    <div className="flex flex-col min-h-[430px] overflow-hidden" style={{ backgroundColor: boardColor }}>
+                    <div className="flex flex-col flex-1 min-h-0 overflow-hidden" style={{ backgroundColor: boardColor }}>
                         
                         {/* === MODE 1: FOLDER NAVIGATION === */}
                         {!activeFolderId && (
@@ -873,9 +1204,9 @@ export default function Agenda({ themeMode }: AgendaProps) {
 
                         {/* === MODE 2: SPECIFIC FOLDER === */}
                         {activeFolderId && activeFolder && (
-                            <div className="flex flex-col h-full bg-white dark:bg-black flex-1 animate-in slide-in-from-right duration-300 w-full" style={{ backgroundColor: boardColor }}>
+                            <div className="flex flex-col flex-1 min-h-0 bg-white dark:bg-black animate-in slide-in-from-right duration-300 w-full" style={{ backgroundColor: boardColor }}>
                                 <div className="p-3 border-b-4 flex items-center gap-4 sticky top-0 z-10 flex-shrink-0" style={{ backgroundColor: isMinimalist ? '#111' : colors.yellow.light, borderColor: isMinimalist ? '#FFF' : '#000' }}>
-                                        <RetroButton onClick={closeFolder} colorType="white" size="sm" className="w-auto px-4" title="Back" themeMode={themeMode}>{"< BACK"}</RetroButton>
+                                        <RetroButton onClick={closeFolder} colorType="white" size="sm" className="w-auto px-6 text-xs md:text-sm" title="Back" themeMode={themeMode}>{"< BACK"}</RetroButton>
                                         <h3 className="text-xl font-bold uppercase" style={{ fontFamily: THEME.font, color: isMinimalist ? '#FFF' : '#000' }}>{activeFolder.title}</h3>
                                 </div>
 
